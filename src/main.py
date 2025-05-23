@@ -32,55 +32,6 @@ CLASS_NAMES = (
 )
 
 
-def get_system_info() -> Optional[dict]:
-    system = platform.system().lower()
-    if system != "linux":
-        print("This script only works on Linux systems.")
-        sys.exit(1)
-
-    distro = ""
-    version = ""
-
-    try:
-        os_release = platform.freedesktop_os_release()
-        distro = os_release.get('ID', '').lower()
-        version = os_release.get('VERSION_ID', '')
-    except (AttributeError, OSError, FileNotFoundError):
-        pass
-
-    if not distro or not version:
-        if os.path.exists("/etc/debian_version"):
-            distro = "debian"
-            with open("/etc/debian_version", "r") as f:
-                version = f.read().strip()
-        elif os.path.exists("/etc/fedora-release"):
-            distro = "fedora"
-            with open("/etc/fedora-release", "r") as f:
-                version_match = re.search(r'release (\d+)', f.read())
-                if version_match:
-                    version = version_match.group(1)
-        elif os.path.exists("/etc/arch-release"):
-            distro = "archlinux"
-            version = "rolling"
-
-    arch = platform.machine().lower()
-
-    if arch in ["x86_64", "amd64"]:
-        arch_type = "intel"
-    elif arch in ["aarch64", "arm64", "armv8"]:
-        arch_type = "arm"
-    else:
-        arch_type = "other"
-
-    return {
-        "system": system,
-        "distro": distro,
-        "version": version,
-        "arch": arch,
-        "arch_type": arch_type
-    }
-
-
 def validate_proxy(proxy: str) -> bool:
     pattern = r"^http:\/\/[a-zA-Z0-9.\-]+(:[0-9]{1,5})$"
     return bool(re.match(pattern, proxy))
@@ -120,6 +71,42 @@ def solve_captcha(driver: Driver):
                 if counter == 3:
                     return
             sleep(0.25)
+
+
+def download_package(
+    driver: Driver,
+    url: str
+) -> None:
+    driver.get(url)
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CLASS_NAME, "container"))
+    )
+
+    # test if cookies notification is present
+    if driver.find_elements(By.ID, "consent_notice"):
+        driver.find_element(By.ID, "consent_notice_agree").click()
+
+    # test if captcha is present
+    while len(driver.find_elements(By.ID, "captcha")):
+        print("Captcha is present, solving...")
+        solve_captcha(driver)
+        sleep(0.5)
+
+    download_block = driver.find_elements(
+        By.XPATH, "/html/body/div/section/div/table[6]")
+    if len(download_block) == 0:
+        print("No download block found")
+        return
+
+    download_link = download_block[0].find_elements(
+        By.CLASS_NAME, "text-break")
+    if download_link:
+        download_link = download_link[0].text.strip()
+        print(f"Download link: {download_link}")
+        return download_link
+    else:
+        print("No download link found")
+        return
 
 
 def get_candidates(
@@ -211,15 +198,16 @@ def select_candidate_prompt(candidates: dict) -> str:
     versions = list(candidates[distros[ind_distro]].keys())
     ind_version = select_from_list(versions)
     print("Selected version:", versions[ind_version])
-    packages = list(candidates[distros[ind_distro]]
-                    [versions[ind_version]].keys())
-    ind_package = select_from_list(packages)
-    print("Selected package:", packages[ind_package])
-    links = list(candidates[distros[ind_distro]]
-                 [versions[ind_version]][packages[ind_package]].keys())
-    ind_link = select_from_list(links)
+    packages = candidates[distros[ind_distro]][versions[ind_version]]
+    if len(packages) == 1:
+        print("Only one package available, selecting it automatically.")
+        ind_package = 0
+    else:
+        ind_package = select_from_list(
+            [pkg['description'] for pkg in packages])
+        print("Selected package:", packages[ind_package]['description'])
 
-    return links[ind_link]
+    return packages[ind_package]['link']
 
 
 def main(args):
@@ -232,15 +220,18 @@ def main(args):
             return
 
     driver = Driver(uc=True,
-                    headless=True,
-                    # headless=False,
+                    # headless=True,
+                    headless=False,
                     agent=AGENT,
                     proxy=proxy)
 
-    candidates = get_candidates(driver, package_name)
-    with open("candidates.json", "w") as file:
+    # candidates = get_candidates(driver, package_name)
+    # with open("candidates.json", "w") as file:
+    #     import json
+    #     json.dump(candidates, file, indent=4)
+    with open("candidates.json", "r") as file:
         import json
-        json.dump(candidates, file, indent=4)
+        candidates = json.load(file)
     res = select_candidate_prompt(candidates)
     print(res)
 
